@@ -7,6 +7,7 @@ library(MASS)
 library(SuperLearner)
 ## data generation -------------------------------------------------------------
 
+
 set.seed(100)
 
 n <- 10000
@@ -20,75 +21,130 @@ for (i in 1:d){
 }
 L <- mvrnorm(n = n, mu = rep(0,d), Sigma = Sigma)
 colnames(L) <- c("cov1", "cov2", "cov3", "cov4","cov5")
-my_data <- data.table(L)
+
+### No Treatment Effect --------------------------------------------------------
+
+my_data_no_hte <- data.table(L)
 
 #propensity score
 pi <- 0.5
 # treatment
 A <- rbinom(n = n, size = 1, prob = pi)
 
-my_data[, A:= A]
+my_data_no_hte[, A:= A]
 
 #random noise epsilon
 e <- rnorm(n)
 
 #mu_a = E[Y|L]-- no treatment effect so these are equal
-beta <- matrix(runif(d,min = 1, max=30),ncol = 1,nrow=d)
+beta <- matrix(runif(d,min = 1, max=30),ncol = 1, nrow=d)
 mu_0 <- L%*%beta
 mu_1 <- mu_0
 Y1 <- mu_1 + e
 Y0 <- mu_0 + e
-my_data[, Y := A*Y1 + (1-A)*Y0]
-my_data[, uid := 1:n]
-my_data[, ps := pi]
+my_data_no_hte[, Y := A*Y1 + (1-A)*Y0]
+my_data_no_hte[, uid := 1:n]
+my_data_no_hte[, ps := pi]
 
-my_data0 <- my_data[A == 0,]
-my_data1 <- my_data[A == 1,]
-### SuperLearner fit -----------------------------------------------------------
+my_data_no_hte0 <- my_data_no_hte[A == 0,]
+my_data_no_hte1 <- my_data_no_hte[A == 1,]
 
-no_hte_superLearner0 <- SuperLearner(Y = my_data0$Y, X = my_data0[,c(1:5)], 
+
+### Unbalanced tx --------------------------------------------------------------
+
+my_data_un_tx <- data.table(L)
+
+#propensity score
+pi <- 0.01
+# treatment
+A <- rbinom(n = n,size = 1,prob = pi)
+my_data_un_tx[, A:= A]
+
+#mu_a = E[Y|L]
+e <- rnorm(n)
+beta<-matrix(runif(d, -5, 5),ncol = 1,nrow=d)
+mu_0 <-L%*%beta + 5*(L[,1] > 0.5)
+mu_1 <- mu_0 + 8*(L[,2] > 0.1)
+true_effect <- mean(mu_1 - mu_0)
+Y1<-mu_1 + e
+Y0<-mu_0 + e
+Y<- A*Y1 + (1-A)*Y0
+my_data_un_tx[, Y := A*Y1 + (1-A)*Y0]
+my_data_un_tx[, uid := 1:n]
+my_data_un_tx[, ps := pi]
+
+my_data_un_tx0 <- my_data_un_tx[A == 0,]
+my_data_un_tx1 <- my_data_un_tx[A == 1,]
+
+### Balanced & no confounding --------------------------------------------------
+
+my_data_bal_tx <- data.table(L)
+#propensity score
+pi <- 0.5
+# treatment
+A <- rbinom(n = n,size = 1,prob = pi)
+my_data_bal_tx[, A:= A]
+beta1 <-matrix(runif(d, 1, 30),ncol = 1,nrow=d)
+beta0 <-matrix(runif(d, 1, 30),ncol = 1,nrow=d)
+mu_1 <- L %*% beta1
+mu_0 <- L %*% beta0
+
+
+Y1 <- mu_1 + e
+Y0 <- mu_0 + e
+my_data_bal_tx[, Y := A*Y1 + (1-A)*Y0]
+my_data_bal_tx[, uid := 1:n]
+my_data_bal_tx[, ps := pi]
+
+my_data_bal_tx0 <- my_data_bal_tx[A == 0,]
+my_data_bal_tx1 <- my_data_bal_tx[A == 1,]
+
+### SuperLearner & Random forest for CATE estimation  --------------------------
+
+cate_estimation <- function(my_data, my_data0, my_data1, covariates, tx){
+
+hte_superLearner0 <- SuperLearner(Y = my_data0$Y, X = my_data0[, ..covariates], 
                                      family = gaussian(), 
                                      SL.library = c("SL.mean","SL.glmnet", 
                                                     "SL.ranger", 
                                                     "SL.gam"))
 
-table(simplify2array(no_hte_superLearner0$whichDiscreteSL))
-
-no_hte_superLearner1 <- SuperLearner(Y = my_data1$Y, X = my_data1[,c(1:5)], 
+hte_superLearner1 <- SuperLearner(Y = my_data1$Y, X = my_data1[, ..covariates], 
                                      family = gaussian(), 
                                      SL.library = c("SL.mean","SL.glmnet", 
                                                     "SL.ranger", 
                                                     "SL.gam"))
 
-table(simplify2array(no_hte_superLearner1$whichDiscreteSL))
-
-
-
-no_hte_superLearner <- SuperLearner(Y = my_data$Y, X = my_data[,c(1:6)], 
+all_cov <- c(covariates,tx)
+hte_superLearner <- SuperLearner(Y = my_data$Y, X = my_data[,..all_cov], 
                                     family = gaussian(), 
                                     SL.library = c("SL.mean","SL.glmnet", "SL.ranger", 
                                                    "SL.gam"))
 
+hte_m_superLearner <- SuperLearner(Y = my_data$Y, X = my_data[,..covariates], 
+                                      family = gaussian(), 
+                                      SL.library = c("SL.mean", "SL.glmnet",
+                                                     "SL.ranger", 
+                                                     "SL.gam"))
+
 ## T-Learner 
 
 mu0_hat <- rep(0, n)
-mu0_hat[my_data$A==0] <- no_hte_superLearner0$SL.predict
-mu0_hat[my_data$A==1] <- predict(no_hte_superLearner0, my_data1, 
+mu0_hat[my_data$A==0] <- hte_superLearner0$SL.predict
+mu0_hat[my_data$A==1] <- predict(hte_superLearner0, my_data1, 
                                  onlySL = TRUE)$pred
 
 
 
 
 mu1_hat <- rep(0, n)
-mu1_hat[my_data$A==1] <- no_hte_superLearner1$SL.predict
-mu1_hat[my_data$A==0] <- predict(no_hte_superLearner1, my_data0,
+mu1_hat[my_data$A==1] <- hte_superLearner1$SL.predict
+mu1_hat[my_data$A==0] <- predict(hte_superLearner1, my_data0,
                                  onlySL = TRUE)$pred
 
 
 cate_t_learner <- mu0_hat-mu1_hat
-hist(cate_t_learner)
 
-mean(cate_t_learner)
 
 ## S-learner
 
@@ -98,8 +154,8 @@ my_dataTMP$A <- 0
 
 mu0_hat_s <- rep(0, n) 
 
-mu0_hat_s[my_data$A==0] <- no_hte_superLearner$SL.predict[my_data$A==0]
-mu0_hat_s[my_data$A==1] <- predict(no_hte_superLearner, my_dataTMP,
+mu0_hat_s[my_data$A==0] <- hte_superLearner$SL.predict[my_data$A==0]
+mu0_hat_s[my_data$A==1] <- predict(hte_superLearner, my_dataTMP,
                                    onlySL = TRUE)$pred[my_data$A==1]
 
 
@@ -108,28 +164,27 @@ my_dataTMP$A <- 1
 
 mu1_hat_s <- rep(0, n) 
 
-mu1_hat_s[my_data$A==1] <- no_hte_superLearner$SL.predict[my_data$A==1]
-mu1_hat_s[my_data$A==0] <- predict(no_hte_superLearner, my_dataTMP, 
+mu1_hat_s[my_data$A==1] <- hte_superLearner$SL.predict[my_data$A==1]
+mu1_hat_s[my_data$A==0] <- predict(hte_superLearner, my_dataTMP, 
                                    onlySL = TRUE)$pred[my_data$A==0]
 
 cate_s_learner <- mu1_hat_s - mu0_hat_s
-hist(cate_s_learner)
-mean(cate_s_learner)
+
 
 ## X - Learner
 
 # Compute pseudo-outcome
-psi_x_0 <- predict(no_hte_superLearner1, my_data0, onlySL=T)$pred - my_data0$Y
-psi_x_1 <- my_data1$Y - predict(no_hte_superLearner0, my_data1, onlySL=T)$pred 
+psi_x_0 <- predict(hte_superLearner1, my_data0, onlySL=T)$pred - my_data0$Y
+psi_x_1 <- my_data1$Y - predict(hte_superLearner0, my_data1, onlySL=T)$pred 
 
 # Fit regressions of pseudo outcome against covariates
 
-tau_x_0_fit <- SuperLearner(Y = psi_x_0, X = my_data0[, c(1:5)], 
+tau_x_0_fit <- SuperLearner(Y = psi_x_0, X = my_data0[, ..covariates], 
                             family = gaussian(), 
                             SL.library = c("SL.mean", "SL.glmnet", 
                                            "SL.gam"))
 
-tau_x_1_fit <- SuperLearner(Y = psi_x_1, X = my_data1[, c(1:5)], 
+tau_x_1_fit <- SuperLearner(Y = psi_x_1, X = my_data1[, ..covariates], 
                             family = gaussian(), 
                             SL.library = c("SL.mean","SL.glmnet", 
                                            "SL.gam"))
@@ -145,10 +200,10 @@ tau_x_1_hat[my_data$A==0] <- predict(tau_x_1_fit, my_data0, onlySL=T)$pred
 
 # Estimate the propensity score: 
 
-pi_fit <- glm(A ~ ., data = my_data[, c(1:6)], family = binomial())
+pi_fit <- glm(A ~ ., data = my_data[, ..all_cov], family = binomial())
 
-pi_hat <- predict(pi_fit, my_data[, c(1:6)], type="response")
-pi_hat
+pi_hat <- predict(pi_fit, my_data[, ..all_cov], type="response")
+
 
 # Ensure positivity
 epsilon <- .01 
@@ -159,8 +214,7 @@ pi_hat <- ifelse(pi_hat < epsilon,
                          1-epsilon, pi_hat))
 
 cate_x_learner <- pi_hat*tau_x_0_hat +(1-pi_hat)* tau_x_1_hat
-hist(cate_x_learner)
-mean(cate_x_learner)
+
 
 ## DR Learner
 
@@ -170,28 +224,21 @@ psi_dr <- mu1_hat - mu0_hat +
      (1/(1-pi_hat)) * ((1-my_data$A)*(my_data$Y - mu0_hat)))
 # regress pseudo-outcome against covariates 
 
-tau_dr_fit <- SuperLearner(Y = psi_dr, X = my_data[, c(1:5)],
+tau_dr_fit <- SuperLearner(Y = psi_dr, X = my_data[, ..covariates],
                            family = gaussian(), 
                            SL.library = c("SL.mean","SL.glmnet", 
-                                          "SL.gam"))
-tau_dr_fit
+                                          "SL.gam", "SL.ranger"))
+
 # CATE DR-Learner
-cate_dr_learner <- predict(tau_dr_fit, my_data[, c(1:5)], onlySL = TRUE)$pred
+cate_dr_learner <- c(predict(tau_dr_fit, my_data[, ..covariates], 
+                             onlySL = TRUE)$pred)
 
-hist(cate_dr_learner)
-
-mean(cate_dr_learner)
 
 ### R-Learner
 
 # model for conditional mean outcome 
-no_hte_m_superLearner <- SuperLearner(Y = my_data$Y, X = my_data[,c(1:5)], 
-                                      family = gaussian(), 
-                                      SL.library = c("SL.mean", "SL.glmnet", "SL.ranger", 
-                                                     "SL.gam"))
 
-
-m_hat <- no_hte_m_superLearner$SL.predict
+m_hat <- hte_m_superLearner$SL.predict
 
 # pseudo-outcome
 
@@ -205,15 +252,48 @@ w = residual_tx^2
 # regress pseudo-outcome (randomForest)
 
 tau_dr_fit <- ranger::ranger(y = psi_dr, x =
-                        my_data[, c(1:5)], keep.inbag =
+                        my_data[, ..covariates], keep.inbag =
                         TRUE)
 
-  # other option is to use a superLearner
-  # SuperLearner(Y = psi_r, X = my_data[, c(1:5)],
-  #                          obsWeights = w,
-  #           family = gaussian(), 
-  #           SL.library = c("SL.mean","SL.ranger"))
-
 cate_r_learner <- tau_dr_fit$predictions
-hist(cate_r_learner)
-mean(cate_r_learner)
+
+return(cbind("S-Learner" = cate_s_learner, 
+         "T-Learner" = cate_t_learner, 
+         "X-Learner" = cate_x_learner,
+         "Dr-Learner" = as.numeric(cate_dr_learner),
+         "R-Leaner" = cate_r_learner))
+}
+
+
+### NO HTE ---------------------------------------------------------------------
+cate_no_hte <- cate_estimation(my_data = my_data_no_hte,
+                     my_data0 = my_data_no_hte0,
+                     my_data1 = my_data_no_hte1,
+                     covariates = colnames(my_data_no_hte[, c(1:5)]),
+                     tx = colnames(my_data_no_hte[, c(6)]))
+
+psych::pairs.panels(cate_no_hte, hist.col = "skyblue")
+
+save(cate_no_hte, file = "cate_no_hte.rda")
+
+### Unbalanced tx --------------------------------------------------------------
+
+cate_un_tx <- cate_estimation(my_data = my_data_un_tx,
+                              my_data0 = my_data_un_tx0,
+                              my_data1 = my_data_un_tx1,
+                              covariates = colnames(my_data_un_tx[, c(1:5)]),
+                              tx = colnames(my_data_un_tx[, c(6)]))
+
+psych::pairs.panels(cate_un_tx,  hist.col = "plum4")
+save(cate_un_tx, file = "cate_un_tx.rda")
+
+### balanced tx & no conf ------------------------------------------------------
+
+cate_bal_tx <- cate_estimation(my_data = my_data_bal_tx,
+                              my_data0 = my_data_bal_tx0,
+                              my_data1 = my_data_bal_tx1,
+                              covariates = colnames(my_data_bal_tx[, c(1:5)]),
+                              tx = colnames(my_data_bal_tx[, c(6)]))
+
+psych::pairs.panels(cate_bal_tx,  hist.col = "aquamarine4")
+save(cate_bal_tx, file = "cate_bal_tx.rda")
