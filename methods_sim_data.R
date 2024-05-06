@@ -49,7 +49,7 @@ my_data_no_hte[, ps := pi]
 my_data_no_hte0 <- my_data_no_hte[A == 0,]
 my_data_no_hte1 <- my_data_no_hte[A == 1,]
 
-
+mean(mu_1-mu_0)
 ### Unbalanced tx --------------------------------------------------------------
 
 my_data_un_tx <- data.table(L)
@@ -88,7 +88,7 @@ beta1 <-matrix(runif(d, 1, 30),ncol = 1,nrow=d)
 beta0 <-matrix(runif(d, 1, 30),ncol = 1,nrow=d)
 mu_1 <- L %*% beta1
 mu_0 <- L %*% beta0
-
+mean(mu_1 - mu_0)
 
 Y1 <- mu_1 + e
 Y0 <- mu_0 + e
@@ -143,7 +143,7 @@ mu1_hat[my_data$A==0] <- predict(hte_superLearner1, my_data0,
                                  onlySL = TRUE)$pred
 
 
-cate_t_learner <- mu0_hat-mu1_hat
+cate_t_learner <- mu1_hat-mu0_hat
 
 
 ## S-learner
